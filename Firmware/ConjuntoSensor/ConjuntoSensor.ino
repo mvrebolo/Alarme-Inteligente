@@ -1,273 +1,184 @@
-
 #include <ESP8266WiFi.h>
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
-#include <stdio.h>
-#include <string.h>
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+#include <EEPROM.h>
 
-void RecebeMSGTelegram(void);
-void RecebeMSGTCP(void);
-void handleNewMessages(int numNewMessages);
-void sendMessageTelegram(String message);
-
-// Mensagens recebidas dos sensores
-#define SENSOR_1        "SENSOR1/r"
-#define SENSOR_2        "SENSOR1/r"
-#define SENSOR_3        "SENSOR1/r"
-#define SENSOR_4        "SENSOR1/r"
-
-// Mensagem que será enviada para os sensores em caso de FOTA
-#define FOTA            "ATUALIZACAO/r"
-
-// Pino do Rele que aciona a sirene
-#define PIN_RELE    1
-
-// IDs dos usuários do Telegram
-#define TELEGRAM_MARCUS     "xxxxxxxxx"
-#define TELEGRAM_FULANO1    "xxxxxxxxx"
-#define TELEGRAM_FULANO2    "xxxxxxxxx"
-#define TELEGRAM_FULANO3    "xxxxxxxxx"
-#define TELEGRAM_FULANO4    "xxxxxxxxx"
-
-// Token para inicializar bot do Telegram (Pegar na criação do BotFather)
-#define BOTtoken "1481349047:AAFg2CgiZTWJeSlgPujDxTmkH73uYJITYBE" 
-
-//Quantidade de usuários que podem interagir com o bot
-#define SENDER_ID_COUNT 5
-
-// WiFi no modo AP
-char ssid_ap[] = "REDE-CRIADA";           
-char pw_ap[] = "SENHA-REDE-CRIADA-123"; 
-          
-WiFiServer server(80);	//Porta do server
-WiFiClient client_ap;	//Client (sensor) que irá mandar mensagem via rede criada pelo Server
-  
-// WiFi no modo STATION
-char ssid_stt[] = "SUA-REDE-LOCAL";     
+// Nome e senha da rede Station
+char ssid_stt[] = "SUA-REDE-LOCAL"; 
 char pw_stt[] = "SENHA-REDE-LOCAL"; 
 
-// Fingerprint Telegram (https://www.grc.com/fingerprints.htm -> api.telegram.org)
-const uint8_t fingerprint[20] = {0xF2, 0xAD, 0x29, 0x9C, 0x34, 0x48, 0xDD, 0x8D, 0xF4, 0xCF, 0x52, 0x32, 0xF6, 0x57, 0x33, 0x68, 0x2E, 0x81, 0xC1, 0x90};
+// Nome e senha da rede AP
+char ssid_ap[] = "REDE-CRIADA"; 
+char password_ap[] = "SENHA-REDE-CRIADA-123"; 
 
-//Ids dos usuários que podem interagir com o bot. 
-//É possível verificar seu id pelo monitor serial ao enviar uma mensagem para o bot
-String validSenderIds[SENDER_ID_COUNT] = {TELEGRAM_MARCUS, TELEGRAM_FULANO1, TELEGRAM_FULANO2, TELEGRAM_FULANO3, TELEGRAM_FULANO4};
+const char* host = "192.168.4.1";
+const int port = 80;
 
-WiFiClientSecure client; // Client (Telegram) que manda ou recebe mensagem via rede local
-UniversalTelegramBot bot(BOTtoken, client); //Inicia bot com o token do bot criado no Telegram
+bool PIRstate ; 
+bool lastPIRstate = HIGH;
+int PIR = 2;
 
-int Bot_mtbs = 1000; //Tempo entre scans de mensagens Telegram
-long Bot_lasttime;   //tempo anterior da ultima mensagem recebida
+bool flag_fota = 0;
 
-// Variaveis para controle
-bool flagAlarm = 0;
-bool alarmeDisparado = 0;
-bool flag_fota1 = 0;
-bool flag_fota2 = 0;
-bool flag_fota3 = 0;
+#define ID_SENSOR   "SENSOR1/r"
+
+// Numero de bytes que quer acessar
+#define EEPROM_SIZE 1
+
+void sendTCP(void);
+void InitOTA(void);
 
 void setup() {
   Serial.begin(115200);
-
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(ssid_ap, pw_ap); //Nome e senha da rede criada
-  delay(2000);
-
-  WiFi.begin(ssid_stt, pw_stt); //Nome e senha da rede local a se conectar.
-
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
-  }
-
-  Serial.println("WiFi connected");
-  delay(100);
-  server.begin();
-  client.setFingerprint(fingerprint); //setando fingerprint do Telegram
-
-  pinMode(PIN_RELE, OUTPUT); //Declarando pino do relé
-  digitalWrite(PIN_RELE, LOW); 
-}
-
-void loop() {
-  RecebeMSGTelegram();
-  RecebeMSGTCP();
-}
-
-void RecebeMSGTelegram(void){
-  if (millis() > Bot_lasttime + Bot_mtbs)  {
-    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-
-    while(numNewMessages) {
-      handleNewMessages(numNewMessages);
-      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-    }
-    Bot_lasttime = millis();
-  }
-}
-
-void RecebeMSGTCP(void){
   
-client_ap = server.available();
+  EEPROM.begin(EEPROM_SIZE);
 
-  if(client_ap){ // Tem algum cliente querendo conectar
-    Serial.println("Client connected!\n");
-    String message = client_ap.readStringUntil('\r'); // Lê mensagem recebida
-    Serial.println(message);
-        
-    if(message.compareTo(SENSOR_1) == 0){
-      if(flag_fota1){ // Solicitação de FOTA
-        flag_fota1 = FALSE;
-        client_ap.print(FOTA);
-        bot.sendMessage(TELEGRAM_MARCUS, "FOTA ID 1 habilitado\n", "");
-      }
-      if(flagAlarm == TRUE){ //Se for verdadeiro, sirene irá tocar
-        digitalWrite(PIN_RELE,HIGH);
-        alarmeDisparado = TRUE;
-      }
-      sendMessageTelegram("Sensor 1 identificado\n");
-    }
-
-    if(message.compareTo(SENSOR_2) == 0){
-      if(flag_fota2){ // Solicitação de FOTA
-        client_ap.print(FOTA);
-        flag_fota2 = FALSE;
-        bot.sendMessage(TELEGRAM_MARCUS, "FOTA ID 2 habilitado\n", "");
-      }
-      if(flagAlarm == TRUE){ //Se for verdadeiro, sirene irá tocar
-        digitalWrite(PIN_RELE,HIGH);
-        alarmeDisparado = TRUE;
-      }
-      sendMessageTelegram("Sensor 2 identificado\n");
-    }
-
-    if(message.compareTo(SENSOR_3) == 0){
-      if(flagAlarm == TRUE){ //Se for verdadeiro, sirene irá tocar
-        digitalWrite(PIN_RELE,HIGH);
-        alarmeDisparado = TRUE;
-      }
-      if(flag_fota3){ // Solicitação de FOTA
-        client_ap.print(FOTA);
-        flag_fota3 = FALSE;
-        bot.sendMessage(TELEGRAM_MARCUS, "FOTA ID 3 habilitado\n", "");
-      }
-      sendMessageTelegram("Sensor 3 identificado\n");
-    }
-    client_ap.stop();
+  if(EEPROM.read(0) == 100){
+    Serial.println("\nEntrou no FOTA\n");
+    EEPROM.write(0, 0);
+    EEPROM.commit();
+    InitOTA();
+    flag_fota = 1;
+  }
+  else{
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid_ap, password_ap);
+    Serial.println("Conectando no AP");
+    while(WiFi.status() != WL_CONNECTED){
+      delay(500);
+      Serial.print("."); 
+     }
+    Serial.println("CONECTADO NO AP\n");
+  
+    pinMode(PIR, INPUT);
+    delay(30000);  // Aguardar 30s para o sensor funcionar corretamente
   }
 }
 
-void handleNewMessages(int numNewMessages) {
-  Serial.println("handleNewMessages");
-  Serial.println(String(numNewMessages));
+void loop(){
 
-  for (int i=0; i<numNewMessages; i++) {
-    String chat_id = String(bot.messages[i].chat_id);
-    String senderId = String(bot.messages[i].from_id); //id do contato
-    String from_name = bot.messages[i].from_name;
-    
-    Serial.println("senderId: " + senderId); //mostra no monitor serial o id de quem mandou a mensagem
-    Serial.println("Name: " + from_name); //mostra no monitor serial o nome de quem mandou a mensagem
-    boolean validSender = validateSender(senderId); //verifica se é o id de um remetente da lista de remetentes válidos
- 
-    if(!validSender) //se não for um remetente válido
+  if(flag_fota){
+      ArduinoOTA.handle();
+  }
+  else{
+    PIRstate = digitalRead(PIR);  //HIGH quando detectado presença, else LOW
+    Serial.println(PIRstate);
+    if (PIRstate == HIGH) // Check se identificou presença
     {
-      bot.sendMessage(chat_id, "EAI " + from_name +  " VOCE NAO TEM PERMISSÃO HAHAHAHAHA", ""); //envia mensagem que não possui permissão e retorna sem fazer mais nada
-      bot.sendMessage(TELEGRAM_MARCUS, "Marcus, " + from_name +  " com ID " + senderId + ", tentou mandar mensagem para o bot","");   //Manda pro meu telegram
-      continue; //continua para a próxima iteração do for (vai para próxima mensgem, não executa o código abaixo)
+      Serial.print("Sensor identificado\n");
+      delay(1000);
+      
+      if (WiFi.status() == WL_CONNECTED)  //Check conexão WiFi
+      {
+        sendTCP();
+      }
+      lastPIRstate = PIRstate;
     }
-    
-    String text = bot.messages[i].text;
-    if (from_name == "") from_name = "Sem nome";
+  }
+}
 
-    if (text == "/ligaralarme") {
-      flagAlarm = 1;
-      
-      digitalWrite(PIN_RELE,HIGH);
-      delay(100);
-      digitalWrite(PIN_RELE,LOW);
-      delay(100);
-      digitalWrite(PIN_RELE,HIGH);
-      delay(100);
-      digitalWrite(PIN_RELE,LOW);
-      
-      bot.sendMessage(chat_id, "Alarme ligado, " + from_name + "\n","");
+void sendTCP(void){
+  WiFiClient client;
+  uint8_t att_cnt=0;
+  uint8_t status_error = false;
+  String message;
+  
+  Serial.println("Conectando no Server");
+  while(!client.connect(host, port)){ // Tenta conectar no concentrador
+    Serial.println("...Conexão falhada!");
+    delay(100); 
+    att_cnt++;
+    if(att_cnt > 30){
+      status_error = true;
+      break;
     }
-
-    if (text == "/desligaralarme") {
-      flagAlarm = 0;
-      alarmeDisparado = 0;
-      
-      digitalWrite(PIN_RELE,LOW);
-      delay(100);
-      digitalWrite(PIN_RELE,HIGH);
-      delay(200);
-      digitalWrite(PIN_RELE,LOW);
-      
-      bot.sendMessage(chat_id, "Alarme desligado, " + from_name + "\n","");
-    }
-
-    if (text == "/estado") {
-      if(flagAlarm){
-        bot.sendMessage(chat_id, "Alarme está ligado, " + from_name + "\n", "");
-        if(alarmeDisparado){
-           bot.sendMessage(chat_id, "Cuidado, " + from_name + ", o alarme está disparado\n", "");
-        }
-      } 
-      else {
-        bot.sendMessage(chat_id, "Alarme está desligado, " + from_name + "\n", "");
+  }
+  if(!status_error){ // Se foi conectado, sera enviado a mensagem
+    client.print(ID_SENSOR);
+    Serial.println("mensagem TCP enviada!\n");
+    while (client.connected() || client.available())
+    {
+      if (client.available()) // Analisa se tem alguma resposta
+      {
+        message = client.readStringUntil('\r');
+        Serial.println(message);
       }
     }
-   
-    if(text == "/ATUALIZACAO1"){
-      flag_fota1 = true;  
-      bot.sendMessage(chat_id, "Ok, " + from_name + "\n", "");
+    
+    if(message == "ATUALIZACAO/r"){ // Se a resposta for ATUALIZACAO, sera resetado programando a posição 0 da EEPROM e resetado o sistema
+      client.stop();
+      EEPROM.write(0, 100);
+      EEPROM.commit();
+      ESP.restart();
     }
-
-    if(text == "/ATUALIZACAO2"){
-      flag_fota2 = true;  
-      bot.sendMessage(chat_id, "Ok, " + from_name + "\n", "");
-    }
-
-    if(text == "/ATUALIZACAO3"){
-      flag_fota3 = true;  
-      bot.sendMessage(chat_id, "Ok, " + from_name + "\n", "");
-    }
-
-    if((text == "/inicia") || (text == "/ajuda")){
-      String welcome = "Fala ae, " + from_name + ".\n";
-      welcome += "Como você está? De boa ai???\n";
-      welcome += "Pode mandar os comandos:\n";
-      welcome += "/ligaralarme: Ligar o alarme\n";
-      welcome += "/desligaralarme: Desligar o alarme\n";
-      welcome += "/estado: Verificar o estado do alarme\n\n";
-      welcome += "VALEU!!\n";
-      bot.sendMessage(chat_id, welcome, "");
-    }
+    client.stop();
+    delay(2000); 
+  }
+  else{
+    Serial.println("Reset\n");
+    ESP.restart();
   }
 }
 
-boolean validateSender(String senderId)
-{
-  //Para cada id de usuário que pode interagir com este bot
-  for(int i=0; i<SENDER_ID_COUNT; i++)
-  {
-    //Se o id do remetente faz parte do array, é retornado que é válido
-    if(senderId == validSenderIds[i])
-    {
-      return true;
-    }
-  }
- 
-  //Se chegou aqui significa que verificou todos os ids e não encontrou no array
-  return false;
-}
+void InitOTA(void){
+  Serial.println("Booting");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid_h, password_h);
+  while(WiFi.status() != WL_CONNECTED){
+    delay(500);
+    Serial.print("."); 
+   }
+  Serial.println("conectado ao home");
 
-void sendMessageTelegram(String message){
-  bot.sendMessage(TELEGRAM_MARCUS, message,"");
-  bot.sendMessage(TELEGRAM_FULANO1, message,"");
-  bot.sendMessage(TELEGRAM_FULANO2, message,"");
-  bot.sendMessage(TELEGRAM_FULANO3, message,"");
-  bot.sendMessage(TELEGRAM_FULANO4, message,"");
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+  // ArduinoOTA.setHostname("myesp8266");
+
+  // No authentication by default
+  // ArduinoOTA.setPassword("admin");
+
+  // Password can be set with it's md5 value as well
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_FS
+      type = "filesystem";
+    }
+
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Serial.println("Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Serial.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Serial.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Serial.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Serial.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Serial.println("End Failed");
+    }
+  });
+  ArduinoOTA.begin();
+  Serial.println("Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
 }
 
